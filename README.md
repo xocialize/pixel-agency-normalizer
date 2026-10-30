@@ -24,6 +24,11 @@ work order AB-T-0359):
 - **Each job's plan**: sizes snapped to the model's envelope (`size_snapped`), black-mask pixels kept exactly, exact
   ×scale upscales, upright sRGB in and out, alpha re-applied, adapters (LoRA) with IC slots, prompt enhancement, erase by
   name, and the creative upscale (tiles, colour lock, faces and text kept).
+- **Layers** (`image.decompose`, Image §3.2, MESKit 0.6.0): offered when the host has a `layerDecompose` model. The
+  descriptor's `layer_count` maximum is the most any offer allows (`ModelCard.maxLayerCount`) and `composite` is listed
+  only when an offer makes one (`producesComposite`). Each job gets exactly the count asked for (from `layer_count` or the
+  prompt's plan) or fails, every layer at the input's size with straight alpha, and transparent input pixels kept
+  transparent (`alpha_reapplied`).
 - **Residency**: one heavy model in memory at a time, idle models released. A host whose own scheduler owns memory
   keeps `ModelHost`'s default hooks, which hold nothing resident.
 
@@ -43,6 +48,11 @@ let normalizer = ImageNormalizer(host: myHost, enhancer: myEnhancer, options: .i
 | `ModelCard`, `ModelRoute`, `ModelWork`, `ModelResult`, `ModelImage`, `ModelMatte`, `ModelProgress`, `ModelFit`, `ModelCapability` | The values that cross the seam. Capabilities use MLXEngine's names (MLXToolKit `Capability` raw values), so a host maps them by `rawValue`. |
 | `PromptEnhancing`, `PromptProfile`, `PromptRewrite`, `PromptTask`, `PromptOutcome` | The optional prompt enhancer behind `prompt_enhance`: its profiles, and its rewrite on a backbone the host routes as `.llm`. The normalizer decides when to call it and what to report. |
 | `Adapters`, `PromptEnhancement`, `Creative`, `Residency` | Their public helpers: enabled-set keys, licences and notes for the console, the creative upscale's models and memory gate. |
+
+A host serving `image.decompose` registers a card with `capabilities: [.layerDecompose]`, `maxLayerCount` and
+`producesComposite`; takes `ModelWork.inputs["image"]`, `params["prompt"]` (the layer plan, when there is one),
+`params["layerCount"]` (when the request or its plan states one), `params["resolution"]` (512 at draft) and `seed`; and
+returns `.layers(layers, composite:)`, front-most first.
 
 Hosts throw `MESError` when the MES code matters (`policy_unmet`, `no_capacity`, `out_of_limits`, `model_unavailable`,
 `unsupported_parameter`). Any other error reaches the client as `engine_error`.

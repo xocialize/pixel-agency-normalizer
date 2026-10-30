@@ -296,6 +296,8 @@ public struct ImageNormalizer: MediaEngine {
             schema["x-mes-ui"] = .object(Self.hints(name, order: order))
             properties[name] = .object(schema)
         }
+        // Decompose (Image §3.2): `layer_count` up to the most an offer allows, `composite` only where an offer makes one.
+        if spec.operation == "image.decompose" { Decompose.narrow(&properties, offers: candidates) }
         if rewrites, case .object(var schema)? = ImageProfile.vocabularySchema(ImageProfile.Param.promptEnhance, operation: spec.operation) {
             schema["description"] = .string(PromptEnhancement.paramDescription)
             schema["x-mes-ui"] = .object(Self.hints(ImageProfile.Param.promptEnhance, order: spec.params.count))
@@ -310,7 +312,8 @@ public struct ImageNormalizer: MediaEngine {
                                  : name == "images" ? maxInputs : name == "references" ? slotCapacity : 1,
                              mediaTypes: io.kind == .image ? Self.imageTypes : io.kind == .mask ? ["image/png", "image/jpeg"] : nil)
         }
-        let outputs = profile.outputs.sorted { $0.key < $1.key }.map { name, io in
+        let outputs = spec.operation == "image.decompose" ? Decompose.outputs(offers: candidates)
+            : profile.outputs.sorted { $0.key < $1.key }.map { name, io in
             OutputSpec(name: name, kind: io.kind,
                        mediaTypes: io.kind == .data ? ["application/json"] : io.kind == .mask ? ["image/png"]
                            : deepModels.isEmpty ? ["image/png", "image/jpeg"] : ["image/png", "image/jpeg", "image/tiff"],
@@ -445,7 +448,7 @@ public struct ImageNormalizer: MediaEngine {
                                          "aspect": "aspect", "megapixels": "slider", "strength": "slider", "count": "stepper",
                                          "scale": "picker", "content": "picker", "kind": "picker", "outputs": "picker",
                                          "language": "text", "prompt_enhance": "picker", "target_operation": "picker",
-                                         "target_model": "picker"]
+                                         "target_model": "picker", "layer_count": "stepper"]
         var hints: [String: MESValue] = ["label": .string(name.replacingOccurrences(of: "_", with: " ").capitalized),
                                          "order": .number(Double(order))]
         if let w = widgets[name] { hints["widget"] = .string(w) }
@@ -462,6 +465,7 @@ public struct ImageNormalizer: MediaEngine {
         "image.extend": "Extend canvas", "image.upscale": "Upscale", "image.restore": "Restore", "image.relight": "Relight",
         "image.colorize": "Colorize", "image.matte": "Select subject", "image.segment": "Select by points",
         "image.describe": "Describe", "image.score": "Quality score", "image.enhance_prompt": "Enhance prompt",
+        "image.decompose": "Decompose into layers",
     ]
     static let summaries = [
         "image.generate": "Text to image.", "image.edit": "Changes an image as instructed, keeping what the instruction doesn't mention.",
@@ -473,6 +477,8 @@ public struct ImageNormalizer: MediaEngine {
         "image.describe": "A caption, alt text and tags.", "image.score": "No-reference quality, 0 to 1.",
         "image.enhance_prompt": "The prompt as the target model would run it with prompt enhancement on, to show and edit "
             + "before generating.",
+        "image.decompose": "The image as a stack of transparent layers, front-most first, that composites back to it. The "
+            + "prompt, optional, plans the layers front-most first (\"Layer 1: the headline. Layer 2: …\").",
     ]
 
     // MARK: - Validation
@@ -480,6 +486,7 @@ public struct ImageNormalizer: MediaEngine {
     public func validate(_ request: JobRequest, descriptor: Descriptor) throws {
         try ImageProfileRules.validate(request, descriptor: descriptor)
         try validateBitDepth(request, descriptor: descriptor)
+        if descriptor.operation == "image.decompose" { try Decompose.validate(request, descriptor: descriptor) }
         // A preview runs on the backbone its target's profile needs, so a named one must be it (Image §3.1: the same
         // enhancer as the target job).
         if descriptor.operation == PromptEnhancement.preview, let named = request.model,
@@ -555,8 +562,12 @@ public struct ImageNormalizer: MediaEngine {
         // With adapters, MESEngineCore has narrowed `candidates` to the offers that list them all (Base §6.3); of those,
         // prefer one that stacks as many as asked, so a request isn't refused for a limit another offer would meet.
         let asked = request.adapters?.count ?? 0
-        let candidates = asked > 1 && candidates.contains(where: { asked <= $0.adapterLimit })
+        var candidates = asked > 1 && candidates.contains(where: { asked <= $0.adapterLimit })
             ? candidates.filter { asked <= $0.adapterLimit } : candidates
+        // Decompose: an offer that allows the count and makes the composite asked for (Image §3.2).
+        if request.operation == "image.decompose" {
+            candidates = Decompose.fitting(candidates, request: request, descriptor: descriptor)
+        }
         var preferred: [String] = []
         switch request.operation {
         case "image.restore":

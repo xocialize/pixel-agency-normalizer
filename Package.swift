@@ -5,7 +5,7 @@ import PackageDescription
 // graph. MES operations and vocabulary in, model runs out, the profile's rules enforced: the operation table (which
 // capability serves each operation, each tier's default model, the vocabulary honoured), descriptors from the models
 // on hand, validation, the default model, and each job's plan (sizes snapped, masks kept exact, ×scale exact, alpha
-// re-applied, 16 bits, adapters, prompt enhancement, the creative upscale).
+// re-applied, 16 bits, adapters, prompt enhancement, the creative upscale, layer decomposition).
 //
 // Its caller supplies the models: a `ModelHost` (list, route, prepare, run) and, for prompt enhancement, a
 // `PromptEnhancing`. pixel-agency-image-engine and Pixel Agency Desktop's built-in engine host models in process over
@@ -17,9 +17,10 @@ let package = Package(
         .library(name: "PixelAgencyNormalizer", targets: ["PixelAgencyNormalizer"]),
     ],
     dependencies: [
-        // MES ≥ 0.4.0: first-class adapters (Base §6.3), the prompt_enhance vocabulary and RunOutput.helpers (Image §1.9),
-        // ic slots (Image §1.10), ModelEnablement. MESCore and MESEngineCore only: no server, no UI.
-        .package(url: "https://github.com/xocialize/media-engine-spec.git", from: "0.4.0"),
+        // MES ≥ 0.6.0: image.decompose (Image §3.2, RFC 0004), on top of first-class adapters (Base §6.3), the
+        // prompt_enhance vocabulary and RunOutput.helpers (Image §1.9), ic slots (Image §1.10), ModelEnablement. MESCore and
+        // MESEngineCore only: no server, no UI.
+        .package(url: "https://github.com/xocialize/media-engine-spec.git", from: "0.6.0"),
     ],
     targets: [
         .target(name: "PixelAgencyNormalizer", dependencies: [

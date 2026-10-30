@@ -15,9 +15,11 @@ final class FakeHost: ModelHost {
     let resident = Mutex<Set<String>>([])
     /// A failure every run throws, when set.
     let failure: (any Error & Sendable)?
+    /// Layers a decomposer returns beyond the count it was asked for (a model that misses the count).
+    let extraLayers: Int
 
-    init(_ cards: [ModelCard] = FakeHost.catalog, failure: (any Error & Sendable)? = nil) {
-        self.cards = cards; self.failure = failure
+    init(_ cards: [ModelCard] = FakeHost.catalog, failure: (any Error & Sendable)? = nil, extraLayers: Int = 0) {
+        self.cards = cards; self.failure = failure; self.extraLayers = extraLayers
     }
 
     func models() async -> [ModelCard] { cards }
@@ -64,6 +66,13 @@ final class FakeHost: ModelHost {
             return .text(#"Sure! {"caption": "A test card.", "alt_text": "A test card.", "tags": ["Test", "Card"]}"#)
         case .imageQualityScore:
             return .score(1.4, subscores: [:])
+        case .layerDecompose:
+            // At its working size (half the input's), every layer shown everywhere it covers, as Ming does.
+            let n = (work.params["layerCount"]?.intValue ?? 3) + extraLayers
+            let (lw, lh) = (max(8, w / 2), max(8, h / 2))
+            let layers = (0..<n).map { Self.band($0, of: n, width: lw, height: lh) }
+            let card = cards.first { $0.id == work.route.id }
+            return .layers(layers, composite: card?.producesComposite == true ? Self.solid(lw, lh, red: 0.4, green: 0.4, blue: 0.4) : nil)
         default:
             throw MESError(.modelUnavailable, "The fake doesn't run \(work.route.capability).")
         }
@@ -90,6 +99,17 @@ final class FakeHost: ModelHost {
                   defaults: .init(steps: 4, guidance: guidance), footprintBytes: UInt64(gb * 1_073_741_824), downloaded: true)
     }
 
+    /// A decomposer: Ming-Image Design-Layer's limits (12 layers, a composite).
+    static func decomposer(_ id: String = "ming-image-layer", maxLayers: Int = 12, composite: Bool = true) -> ModelCard {
+        var card = model(id, [.layerDecompose], gb: 8)
+        card.maxLayerCount = maxLayers
+        card.producesComposite = composite
+        return card
+    }
+
+    /// Without a decomposer: Pixel Agency's own engines (pixel-agency-image-engine, Desktop's built-in) host none.
+    static var catalogWithoutDecomposer: [ModelCard] { catalog.filter { !$0.capabilities.contains(.layerDecompose) } }
+
     static let catalog: [ModelCard] = [
         model("z-image-turbo", [.textToImage], guidance: 1, gb: 12),
         model("klein-4b", [.textToImage, .imageEdit], guidance: 4, maxInputs: 4, gb: 8),
@@ -108,6 +128,7 @@ final class FakeHost: ModelHost {
         model("mage-vl", [.imageAnalysis]),
         model("siglip2-quality", [.imageQualityScore]),
         model("tiny-llm", [.llm]),
+        decomposer(),
     ]
 
     static func size(_ image: ModelImage) -> (Int, Int)? {
@@ -121,6 +142,19 @@ final class FakeHost: ModelHost {
                             bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
         ctx.setFillColor(red: red, green: green, blue: blue, alpha: 1)
         ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        return ModelImage(format: .png, data: png(ctx.makeImage()!), width: w, height: h)
+    }
+
+    /// Layer `i` of `n`: a vertical band of colour, clear elsewhere; the last layer is an opaque background.
+    static func band(_ i: Int, of n: Int, width w: Int, height h: Int) -> ModelImage {
+        let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(red: CGFloat(i) / CGFloat(max(1, n - 1)), green: 0.3, blue: 0.6, alpha: 1)
+        if i == n - 1 {
+            ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        } else {
+            ctx.fill(CGRect(x: i * w / max(1, n - 1), y: 0, width: max(1, w / max(1, n - 1)), height: h))
+        }
         return ModelImage(format: .png, data: png(ctx.makeImage()!), width: w, height: h)
     }
 

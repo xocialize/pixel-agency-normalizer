@@ -293,6 +293,23 @@ enum Media {
         return out
     }
 
+    /// Whether `layer` shows anything where `input` (the same size) is fully transparent.
+    static func shows(_ layer: Pixels, whereClear input: Pixels) -> Bool {
+        stride(from: 3, to: input.rgba.count, by: 4).contains { input.rgba[$0] == 0 && layer.rgba[$0] > 0 }
+    }
+
+    /// `layer` with its alpha capped at `input`'s (the same size), pixel by pixel: a decomposed layer keeps its own
+    /// transparency, and shows nothing where the input is transparent (Image §3.2, §1.5).
+    static func capAlpha(_ layer: Pixels, at input: Pixels) -> Pixels {
+        var out = layer
+        for i in 0..<(layer.width * layer.height) {
+            let a = Int(input.rgba[i * 4 + 3]), l = Int(layer.rgba[i * 4 + 3])
+            guard l > a else { continue }
+            for c in 0..<4 { out.rgba[i * 4 + c] = UInt8((Int(layer.rgba[i * 4 + c]) * a + l / 2) / l) }
+        }
+        return out
+    }
+
     /// The image on a larger canvas for `image.extend` (IMG-5): the original at (`left`, `top`), the new area filled
     /// with the nearest edge pixels as a starting point, and a mask that is white exactly over the new area.
     static func pad(_ image: Pixels, left: Int, top: Int, right: Int, bottom: Int) -> (Pixels, Mask) {

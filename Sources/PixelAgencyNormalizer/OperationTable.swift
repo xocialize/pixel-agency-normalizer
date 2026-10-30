@@ -187,7 +187,46 @@ enum OperationTable {
                       params: ["language"], inputs: ["image": true]),
         OperationSpec("image.score", .imageQualityScore, defaults: ["siglip2-quality"], otherTiers: all,
                       params: [], inputs: ["image": true]),
+        // Decompose (Image §3.2, RFC 0004): `layerDecompose` models, Ming-Image Design-Layer first (Gaea's
+        // `ming-image-layer`). `quality` picks the working bucket (`decomposeResolution`); `layer_count`'s maximum and the
+        // `composite` output come from the offers' cards (`ImageNormalizer.descriptor`). `prompt_enhance` isn't offered:
+        // no enhancer plans layers yet (a planner would read the image, as an edit's rewriter would, E4).
+        OperationSpec("image.decompose", .layerDecompose, defaults: ["ming-image-layer"], otherTiers: all,
+                      params: ["layer_count", "outputs", "quality", "seed", "output"], narrowed: ["output": alphaOutput],
+                      inputs: ["image": true, "prompt": false]),
     ]
+
+    /// PNG, 8-bit: decompose's layers carry alpha, so formats without it (JPEG) aren't offered (Image §3.2).
+    static let alphaOutput: JSONValue = [
+        "type": "object", "additionalProperties": false,
+        "properties": ["media_type": ["enum": ["image/png"]], "bit_depth": ["enum": [8]]],
+    ]
+
+    /// Decompose's working bucket by quality tier, the package's `resolution`: 512 at draft (Ming's fast bucket); at
+    /// standard and best the model's default (Ming's 1024).
+    static let decomposeResolution: [QualityTier: Int] = [.draft: 512]
+
+    /// The annotation on decompose's `layer_count` giving each offer's maximum, by model id (RFC 0004 A5: until offers
+    /// carry limits, the descriptor's maximum is the most any offer allows, and a named model allowing fewer is 422).
+    static let maxLayerCountsKey = "x-pixelagency-max-layer-counts"
+    /// The annotation on decompose's `outputs` naming the offers that make a `composite`.
+    static let compositeModelsKey = "x-pixelagency-composite-models"
+    /// `layer_count`'s vocabulary maximum (Image §2), for a model that states none.
+    static let vocabularyMaxLayers = 32
+
+    /// The count a decompose plan states, as Ming-Image's package reads it ("Decompose this image into N layers",
+    /// "Number of layers: N"), or else its highest "Layer N" entry: a plan lists its layers front-most first (§3.2).
+    static func statedLayerCount(_ plan: String) -> Int? {
+        let lower = plan.lowercased()
+        if let m = lower.firstMatch(of: /decompose this image into\s+(\d+)\s+layers?/), let n = Int(m.1) { return n }
+        for line in lower.components(separatedBy: .newlines) {
+            let s = line.trimmingCharacters(in: .whitespaces)
+            if s.hasPrefix("number of layers:"), let n = Int(s.dropFirst("number of layers:".count).trimmingCharacters(in: .whitespaces)) {
+                return n
+            }
+        }
+        return lower.matches(of: /\blayer\s+(\d+)\s*[:.)\-–]/).compactMap { Int($0.1) }.max()
+    }
 
     /// The prompt enhancer's preview (Image §3.1; AB-D-0155, E5): its offers are the enhancer's `backbones`, and it's
     /// declared while one is on (`ImageNormalizer.descriptor`). A preview runs on the backbone its target's profile needs

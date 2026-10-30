@@ -43,6 +43,7 @@ struct RunPlan {
         case "image.segment": outputs = try await segment()
         case "image.describe": outputs = try await describe()
         case "image.score": outputs = try await score()
+        case "image.decompose": outputs = try await decompose()
         case PromptEnhancement.preview: outputs = try await previewPrompt()
         default: throw MESError(.unknownOperation, "No plan for \(spec.operation).")
         }

@@ -68,6 +68,8 @@ public struct ModelCapability: RawRepresentable, Sendable, Hashable, Codable, Cu
     public static let imageAnalysis = Self("imageAnalysis")
     public static let imageQualityScore = Self("imageQualityScore")
     public static let defectDetect = Self("defectDetect")
+    /// An image as a stack of straight-alpha RGBA layers, front-most first (`image.decompose`, Image §3.2).
+    public static let layerDecompose = Self("layerDecompose")
     /// A text model: the prompt enhancer's backbone.
     public static let llm = Self("llm")
 }
@@ -95,15 +97,24 @@ public struct ModelCard: Sendable, Equatable, Identifiable {
     public var requestKeys: [String]
     /// The adapters (LoRA) it takes; empty when none.
     public var adapters: [Adapter]
+    /// A `layerDecompose` model's most layers per request (Ming-Image Design-Layer: 12), or nil for the vocabulary's 32.
+    /// The descriptor's `layer_count` maximum is the most any offer allows; a request naming this model above it is 422
+    /// `out_of_limits` (Image §3.2, RFC 0004 A5).
+    public var maxLayerCount: Int?
+    /// A `layerDecompose` model returns its own composite of the canvas (`ModelResult.layers`' `composite`), so
+    /// `image.decompose` offers the `composite` output.
+    public var producesComposite: Bool
 
     public init(id: String, displayName: String, capabilities: [ModelCapability], maturity: Maturity = .prod,
                 license: License, sourceRepo: String = "", revision: String = "", envelope: Envelope,
                 defaults: Defaults = .init(), footprintBytes: UInt64? = nil, downloaded: Bool = false,
-                problem: String? = nil, requestKeys: [String] = [], adapters: [Adapter] = []) {
+                problem: String? = nil, requestKeys: [String] = [], adapters: [Adapter] = [],
+                maxLayerCount: Int? = nil, producesComposite: Bool = false) {
         self.id = id; self.displayName = displayName; self.capabilities = capabilities; self.maturity = maturity
         self.license = license; self.sourceRepo = sourceRepo; self.revision = revision; self.envelope = envelope
         self.defaults = defaults; self.footprintBytes = footprintBytes; self.downloaded = downloaded
         self.problem = problem; self.requestKeys = requestKeys; self.adapters = adapters
+        self.maxLayerCount = maxLayerCount; self.producesComposite = producesComposite
     }
 
     /// Chosen when a request names no model: permissive and production. Others run only when named.
@@ -293,6 +304,8 @@ public struct ModelWork: Sendable {
     /// The package's mode, e.g. `fast` (MI-GAN on the inpainting package) or `tiles` (Mage's batch).
     public var mode: String?
     /// The capability's params: `prompt`, `negativePrompt`, `strength`, `scale`, `kind`, `points`, … as the package names them.
+    /// `layerDecompose` takes `prompt` (the layer plan, when the request has one), `layerCount` (when the request or its
+    /// plan states one; else the model's default) and `resolution` (the working bucket: 512 at draft; absent, the model's).
     public var params: [String: JSONValue]
     /// Images by input name: `image`, `images`, `mask`, and an IC adapter's `adapter<n>.<role>`.
     public var inputs: [String: [ModelImage]]
@@ -335,6 +348,9 @@ public enum ModelResult: Sendable {
     case score(Float, subscores: [String: Float])
     /// A vision-language model's reply.
     case text(String)
+    /// A layer decomposition: the layers front-most first (the last is the background), straight alpha, at the model's
+    /// working size; and the model's own composite of the canvas, when it makes one.
+    case layers([ModelImage], composite: ModelImage?)
 }
 
 /// An image crossing the seam: PNG or JPEG bytes, or raw pixels.

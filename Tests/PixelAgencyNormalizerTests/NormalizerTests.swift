@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 @testable import MESConformance
 import MESCore
@@ -12,7 +13,7 @@ import Testing
 func config() -> EngineConfiguration {
     let spool = FileManager.default.temporaryDirectory.appendingPathComponent("pa-normalizer-\(UUID().uuidString)")
     var c = EngineConfiguration(id: "eng_normalizer_test", name: "Pixel Agency Normalizer (test)",
-                                implementationName: "pixel-agency-normalizer", implementationVersion: "0.1.0", spoolDirectory: spool)
+                                implementationName: "pixel-agency-normalizer", implementationVersion: "0.2.0", spoolDirectory: spool)
     c.advertise = false
     c.sweepInterval = .milliseconds(200)
     return c
@@ -37,6 +38,21 @@ func withEngine(host: FakeHost = FakeHost(), enhancer: FakeEnhancer? = nil, opti
 
 func image(_ data: Data = Fixtures.png()) -> RequestInput { .one(.inline(mediaType: "image/png", data: data)) }
 
+/// A picture whose left half is fully transparent.
+func halfClearPNG(width: Int = 64, height: Int = 48) -> Data {
+    let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                        space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    ctx.setFillColor(red: 0.9, green: 0.5, blue: 0.1, alpha: 1)
+    ctx.fill(CGRect(x: width / 2, y: 0, width: width - width / 2, height: height))
+    return FakeHost.png(ctx.makeImage()!)
+}
+
+/// The IMAGE-014 to IMAGE-016 results of a conformance run.
+func decomposeResults(_ report: ConformanceReport) -> [String: TestResult.Status] {
+    Dictionary(uniqueKeysWithValues: report.results.filter { ["IMAGE-014", "IMAGE-015", "IMAGE-016"].contains($0.id) }
+        .map { ($0.id, $0.status) })
+}
+
 @Suite("Pixel Agency Normalizer", .serialized)
 struct NormalizerTests {
     @Test("Conformance: every applicable BASE and IMAGE test passes against the normalizer over an MLX-free host")
@@ -47,6 +63,111 @@ struct NormalizerTests {
             #expect(failed.isEmpty, "\(failed.joined(separator: "\n"))")
             #expect(report.conformsToBase && report.conformsToImage == true)
             #expect(report.results.first { $0.id == "IMAGE-011" }?.status == .pass, "the prompt enhancer's preview runs")
+            #expect(decomposeResults(report) == ["IMAGE-014": .pass, "IMAGE-015": .pass, "IMAGE-016": .pass],
+                    "decompose runs on the decomposer, with its composite")
+        }
+    }
+
+    @Test("Conformance: decompose on a decomposer that makes no composite refuses one (IMAGE-015's 422 branch)")
+    func conformanceWithoutComposite() async throws {
+        let cards = FakeHost.catalogWithoutDecomposer + [FakeHost.decomposer(maxLayers: 6, composite: false)]
+        try await withEngine(host: FakeHost(cards)) { probe in
+            let report = await ConformanceRunner.run(probe, only: ["IMAGE-014", "IMAGE-015", "IMAGE-016"])
+            #expect(decomposeResults(report) == ["IMAGE-014": .pass, "IMAGE-015": .pass, "IMAGE-016": .pass],
+                    "\(report.results.map { "\($0.id): \($0.detail ?? "")" })")
+            let d = try #require(probe.descriptor("image.decompose"))
+            #expect(d.outputs.map(\.name) == ["layers"])
+            #expect(d.params["properties"]?["outputs"]?["items"]?["enum"] == ["layers"])
+        }
+    }
+
+    @Test("decompose: hosts without a layerDecompose model (Pixel Agency's own engines) don't offer it")
+    func decomposeNotOffered() async throws {
+        let ops = await ImageNormalizer(host: FakeHost(FakeHost.catalogWithoutDecomposer)).descriptors()
+        #expect(!ops.contains { $0.operation == "image.decompose" })
+        #expect(ops.contains { $0.operation == "image.matte" })
+    }
+
+    @Test("decompose: the count from layer_count or the plan, the working bucket, layers at the input's size, the composite on request")
+    func decompose() async throws {
+        let host = FakeHost()
+        try await withEngine(host: host) { probe in
+            let d = try #require(probe.descriptor("image.decompose"))
+            #expect(d.params["properties"]?["layer_count"]?["maximum"] == 12)
+            #expect(d.params["properties"]?["layer_count"]?[OperationTable.maxLayerCountsKey] == ["ming-image-layer": 12])
+            #expect(d.params["properties"]?["output"]?["properties"]?["media_type"]?["enum"] == ["image/png"])
+            #expect(d.params["properties"]?["prompt_enhance"] == nil, "no enhancer plans layers yet")
+            #expect(d.outputs.map(\.name) == ["composite", "layers"] && d.outputs.last?.max == 12)
+            let plan = "Layer 1: the headline.\nLayer 2: the badge.\nLayer 3: the background."
+            let job = try await probe.succeed(JobRequest(
+                operation: "image.decompose", inputs: ["image": image(Fixtures.png(width: 72, height: 40)), "prompt": .text(plan)],
+                params: ["quality": "draft", "outputs": ["layers", "composite"], "seed": 5]))
+            let outputs = job.result?.outputs ?? []
+            #expect(outputs.map(\.name) == ["layers", "layers", "layers", "composite"])
+            #expect(outputs.allSatisfy { $0.width == 72 && $0.height == 40 && $0.mediaType == "image/png" })
+            #expect(job.result?.effective["layer_count"] == 3)
+            #expect(job.result?.effective["seed"] == 5)
+            let work = try #require(host.calls.withLock { $0.last })
+            #expect(work.route.capability == .layerDecompose && work.route.id == "ming-image-layer")
+            #expect(work.params["prompt"]?.stringValue == plan && work.params["layerCount"] == 3 && work.params["resolution"] == 512)
+            #expect(work.seed == 5)
+            #expect(job.warnings.isEmpty)
+
+            // No count and no plan: the model's own; standard is the model's own bucket; layers only by default.
+            let plain = try await probe.succeed(JobRequest(operation: "image.decompose", inputs: ["image": image()],
+                                                           params: ["layer_count": 5]))
+            #expect(plain.result?.outputs.map(\.name) == Array(repeating: "layers", count: 5))
+            #expect(plain.result?.effective["layer_count"] == 5)
+            let last = try #require(host.calls.withLock { $0.last })
+            #expect(last.params["resolution"] == nil && last.params["prompt"] == nil && last.params["layerCount"] == 5)
+        }
+    }
+
+    @Test("decompose: transparent input pixels stay transparent in every layer, with alpha_reapplied")
+    func decomposeAlpha() async throws {
+        try await withEngine { probe in
+            let job = try await probe.succeed(JobRequest(operation: "image.decompose", inputs: ["image": image(halfClearPNG())],
+                                                         params: ["layer_count": 2]))
+            #expect(job.warnings.map(\.code) == ["alpha_reapplied"])
+            for output in job.result?.outputs ?? [] {
+                let layer = try DecodedImage(try await probe.output(job, output.index).1)
+                #expect(layer.hasAlpha && layer.width == 64)
+                // The background layer covered everything; its left half is clear now, its right half not.
+                let alpha = { (x: Int, y: Int) in layer.rgba[(y * layer.width + x) * 4 + 3] }
+                #expect(alpha(5, 20) == 0)
+                if output.index == 1 { #expect(alpha(50, 20) == 255) }
+            }
+        }
+    }
+
+    @Test("decompose refuses: a plan contradicting layer_count (400), above the maximum (422), a named model's limits (422); a missed count fails")
+    func decomposeRefusals() async throws {
+        let cards = FakeHost.catalog + [FakeHost.decomposer("small-layer", maxLayers: 4, composite: false)]
+        try await withEngine(host: FakeHost(cards)) { probe in
+            let schemas = probe.schemas
+            func post(_ params: [String: JSONValue], prompt: String? = nil, model: String? = nil) async throws -> Wire.Reply {
+                var inputs: [String: RequestInput] = ["image": image()]
+                if let prompt { inputs["prompt"] = .text(prompt) }
+                return try await probe.wire.json("POST", "jobs", JobRequest(operation: "image.decompose", inputs: inputs,
+                                                                            params: params, model: model))
+            }
+            try expect(try await post(["layer_count": 2], prompt: "Decompose this image into 3 layers."), 400,
+                       code: "invalid_request", "a plan of 3 against layer_count 2", schemas: schemas)
+            try expect(try await post([:], prompt: "Number of layers: 13"), 422, code: "out_of_limits", "a plan of 13", schemas: schemas)
+            try expect(try await post(["layer_count": 13]), 422, code: "out_of_limits", "layer_count 13", schemas: schemas)
+            try expect(try await post(["layer_count": 6], model: "small-layer"), 422, code: "out_of_limits",
+                       "6 layers from a model allowing 4", schemas: schemas)
+            try expect(try await post(["outputs": ["layers", "composite"]], model: "small-layer"), 422,
+                       code: "unsupported_parameter", "a composite from a model making none", schemas: schemas)
+            try expect(try await post(["outputs": ["composite"]]), 400, code: "invalid_request", "outputs without layers",
+                       schemas: schemas)
+            // Unnamed, 6 layers runs on the model that allows them.
+            let six = try await probe.succeed(JobRequest(operation: "image.decompose", inputs: ["image": image()], params: ["layer_count": 6]))
+            #expect(six.result?.provenance.model.id == "ming-image-layer")
+        }
+        try await withEngine(host: FakeHost(extraLayers: 1)) { probe in
+            let job = try await probe.run(JobRequest(operation: "image.decompose", inputs: ["image": image()], params: ["layer_count": 3]))
+            #expect(job.error?.code == MESErrorCode.engineError.rawValue)
         }
     }
 
@@ -139,6 +260,10 @@ struct NormalizerTests {
         #expect(Erase.objectName("A red mug.\nIt sits on the table.") == "red mug")
         #expect(Erase.objectName("") == "object")
         #expect(Describe.parse("not json")["caption"] == "not json")
+        #expect(OperationTable.statedLayerCount("Decompose this image into 4 layers. Layer 1: text.") == 4)
+        #expect(OperationTable.statedLayerCount("Number of layers: 6\nLayer 1: the logo") == 6)
+        #expect(OperationTable.statedLayerCount("Layer 1: the headline. Layer 2: the badge.") == 2)
+        #expect(OperationTable.statedLayerCount("Split the layer 2 of the design") == nil)
 
         let trigger = ModelCard.Adapter(id: "x:y", title: "Y", capabilities: [.textToImage], trigger: "mrth",
                                         license: "Apache-2.0", commercialUse: "allowed")
