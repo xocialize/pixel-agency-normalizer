@@ -24,12 +24,6 @@ jobs:
           sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
           xcrun swift --version
 
-      # TEMPORARY: media-engine-spec's Swift 6.3 fixes before they are released.
-      - name: Use media-engine-spec's ci/macos-26 branch
-        run: |
-          git clone --depth 1 -b ci/macos-26 https://github.com/xocialize/media-engine-spec.git "$RUNNER_TEMP/mes"
-          swift package edit media-engine-spec --path "$RUNNER_TEMP/mes"
-
       - name: Build (release)
         run: swift build -c release
 

@@ -60,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/xocialize/media-engine-spec.git",
       "state" : {
-        "revision" : "8a5c871673b164adcc52b579f696d4f55bd79ff2",
-        "version" : "0.6.0"
+        "revision" : "a6b107f6a6dc119da9566e4140d1f26c208d5f7e",
+        "version" : "0.9.1"
       }
     },
     {
