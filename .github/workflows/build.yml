@@ -1,0 +1,40 @@
+# Builds the library and runs the tests on GitHub's newest macOS runner, whose newest Xcode (26, Swift 6.3) is a
+# release behind the one the fleet develops on: code Swift 6.4 accepts and 6.3 rejects fails here first (AB-A-0244).
+name: build
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select the newest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)"
+          xcrun swift --version
+
+      # TEMPORARY: media-engine-spec's Swift 6.3 fixes before they are released.
+      - name: Use media-engine-spec's ci/macos-26 branch
+        run: |
+          git clone --depth 1 -b ci/macos-26 https://github.com/xocialize/media-engine-spec.git "$RUNNER_TEMP/mes"
+          swift package edit media-engine-spec --path "$RUNNER_TEMP/mes"
+
+      - name: Build (release)
+        run: swift build -c release
+
+      - name: Build the tests
+        run: swift build --build-tests
+
+      - name: Test
+        run: swift test --skip-build
