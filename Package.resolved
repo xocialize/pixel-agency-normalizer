@@ -1,5 +1,5 @@
 {
-  "originHash" : "6c4a841b117afcd2d51b0020f559eedbfb52a66834f393cda3cec77d63c05330",
+  "originHash" : "df268234df6a2cbb64f5aa0c6fc9c496ba4657b21194b1d31986ee0d9f54a1a4",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -29,6 +29,15 @@
       }
     },
     {
+      "identity" : "erasekit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/xocialize/EraseKit.git",
+      "state" : {
+        "revision" : "14754f6dc2ad92ed54bc962bf4d0d139aca95652",
+        "version" : "0.3.0"
+      }
+    },
+    {
       "identity" : "eventsource",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/mattt/eventsource.git",
@@ -53,6 +62,24 @@
       "state" : {
         "revision" : "6c621839a0ae73c99d8a9ce968f48a5b7d5985f2",
         "version" : "2.8.1"
+      }
+    },
+    {
+      "identity" : "matroska-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/xocialize/matroska-swift.git",
+      "state" : {
+        "revision" : "7baa8a635259bc9bd2b7f3a3dffff6bcd700e453",
+        "version" : "0.2.0"
+      }
+    },
+    {
+      "identity" : "media-bridge",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/xocialize/media-bridge.git",
+      "state" : {
+        "revision" : "88f80a49ac8ea9e5d08c44bb42ab9e20cf2cfeb0",
+        "version" : "0.40.2"
       }
     },
     {

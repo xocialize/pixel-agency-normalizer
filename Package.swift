@@ -21,11 +21,15 @@ let package = Package(
         // prompt_enhance vocabulary and RunOutput.helpers (Image §1.9), ic slots (Image §1.10), ModelEnablement. MESCore and
         // MESEngineCore only: no server, no UI.
         .package(url: "https://github.com/xocialize/media-engine-spec.git", from: "0.6.0"),
+        // EraseFill: the generative fill route's pixel steps (FillRoute), the one implementation the bake-off measured,
+        // shared with ForgeCore (AB-A-0180). Its own product with no dependencies, CoreGraphics only: still no MLX.
+        .package(url: "https://github.com/xocialize/EraseKit.git", from: "0.3.0"),
     ],
     targets: [
         .target(name: "PixelAgencyNormalizer", dependencies: [
             .product(name: "MESCore", package: "media-engine-spec"),
             .product(name: "MESEngineCore", package: "media-engine-spec"),
+            .product(name: "EraseFill", package: "EraseKit"),
         ]),
         // The tests serve the normalizer over a fake host and run MES's conformance suite against it: still no MLX.
         .testTarget(name: "PixelAgencyNormalizerTests", dependencies: [

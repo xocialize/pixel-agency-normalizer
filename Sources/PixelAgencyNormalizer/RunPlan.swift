@@ -1,3 +1,4 @@
+import EraseFill
 import Foundation
 import MESCore
 import MESEngineCore
@@ -363,17 +364,17 @@ struct RunPlan {
         let mask = try loadMask("mask", for: original)
         let prompt = context.input("prompt")?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if spec.operation == "image.erase", await generative() {
-            return [try write(Media.composite(result: try await eraseByName(original, mask: mask), over: original, mask: mask), name: "image")]
+            return [try write(FillRoute.composite(result: try await eraseByName(original, mask: mask), over: original, mask: mask), name: "image")]
         }
         if spec.operation == "image.fill", await generative() {
             let instruction = prompt.isEmpty
                 ? "Fill the bright magenta area so it blends seamlessly into the rest of the picture, as if nothing had been there. Keep everything else unchanged."
                 : "Replace the bright magenta area with \(prompt). Match the picture's lighting, perspective and style, and keep everything else unchanged."
             if let result = try await paint(original, region: mask, instruction: instruction, prompt: prompt) {
-                return [try write(Media.composite(result: result, over: original, mask: mask), name: "image")]
+                return [try write(FillRoute.composite(result: result, over: original, mask: mask), name: "image")]
             }
             let result = try await fallBack(original, hole: mask.hole)
-            return [try write(Media.composite(result: result, over: original, mask: mask), name: "image")]
+            return [try write(FillRoute.composite(result: result, over: original, mask: mask), name: "image")]
         }
         if !prompt.isEmpty {
             warn("prompt_ignored", "\(context.model.title) fills from the surrounding picture; the prompt isn't used.", param: "prompt")
@@ -383,7 +384,7 @@ struct RunPlan {
         let mode = inpaintMode()
         let result = try image(try await invoke(route, params: [:], mode: mode,
                                                 inputs: ["image": [Media.modelImage(original)], "mask": [Media.modelImage(mask.hole)]]))
-        return [try write(Media.composite(result: result, over: original, mask: mask), name: "image")]
+        return [try write(FillRoute.composite(result: result, over: original, mask: mask), name: "image")]
     }
 
     /// The edit model left its region unpainted (the marker colour is still there, twice): LaMa fills it instead,
@@ -405,7 +406,7 @@ struct RunPlan {
     /// handed back (`Erase.handedBack`) is retried once with the next seed; after that LaMa erases it.
     mutating func eraseByName(_ original: Pixels, mask: Mask) async throws -> Pixels {
         let hole = mask.hole
-        guard let region = Media.bounds(of: hole) else { return original }
+        guard let region = FillRoute.bounds(of: hole) else { return original }
         guard let square = Media.square(around: region, width: original.width, height: original.height) else {
             return try await fallBack(original, hole: hole, because: "needs the area to fit in a square inside the picture")
         }
@@ -416,7 +417,7 @@ struct RunPlan {
         let maxSide = Int(Double(editor.envelope.maxPixels).squareRoot()) / 16 * 16
         let side = max(512, min(maxSide, square.width / 16 * 16))
         let k = Double(side) / Double(square.width)
-        let input = Media.crop(original, square).resized(side, side)
+        let input = FillRoute.crop(original, square).resized(side, side)
         let local = Box(x: region.x - square.x, y: region.y - square.y, width: region.width, height: region.height).scaled(k)
             .grown(by: Int((0.045 * Double(side)).rounded()), within: side, side)
         let boxed = Media.outline(input, box: local, thickness: max(3, side * 7 / 1024))
@@ -427,7 +428,7 @@ struct RunPlan {
         let name = Erase.objectName(reply)
         modelParams["namer"] = .string(namer.id)
         modelParams["named"] = .string(name)
-        let before = Media.crop(original, square), squareHole = Media.crop(hole, square)
+        let before = FillRoute.crop(original, square), squareHole = FillRoute.crop(hole, square)
         let base = seed(count: 2)
         for attempt in 0..<2 {
             let result = try image(try await invoke(editor, params: ["prompt": .string(Erase.instruction(name))],
@@ -437,7 +438,7 @@ struct RunPlan {
             guard Media.meanDifference(result, before, within: squareHole) < Erase.handedBack else {
                 seedUsed = base + UInt64(attempt)
                 if attempt > 0 { modelParams["retries"] = .number(Double(attempt)) }
-                return Media.paste(Media.harmonize(result, toward: before, region: squareHole), into: original, at: square)
+                return FillRoute.paste(FillRoute.harmonize(result, toward: before, region: squareHole), into: original, at: square)
             }
             modelParams["rejected"] = "object left"
         }
@@ -448,7 +449,7 @@ struct RunPlan {
         let original = try load("image")
         let prompt = context.input("prompt")?.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let (l, t, r, b) = try padding(for: original)
-        let (canvas, mask) = Media.pad(original, left: l, top: t, right: r, bottom: b)
+        let (canvas, mask) = FillRoute.pad(original, left: l, top: t, right: r, bottom: b)
         effective["canvas"] = ["left": .number(Double(l)), "top": .number(Double(t)), "right": .number(Double(r)), "bottom": .number(Double(b))]
         let result: Pixels
         if await generative() {
@@ -458,22 +459,22 @@ struct RunPlan {
             let instruction = "Replace the bright magenta \(edges.count > 1 ? "areas" : "area") at the \(named) "
                 + "\(edges.count > 1 ? "edges" : "edge") with a seamless continuation of the scene"
                 + (prompt.isEmpty ? "" : " showing \(prompt)") + ". Keep everything else unchanged."
-            let sides = Media.sides(width: canvas.width, height: canvas.height, left: l, top: t, right: r, bottom: b)
+            let sides = FillRoute.sides(width: canvas.width, height: canvas.height, left: l, top: t, right: r, bottom: b)
             guard let paintedRegion = try await paint(canvas, region: mask, instruction: instruction, prompt: prompt,
                                                       parts: sides, checkDark: true) else {
                 let filled = try await fallBack(canvas, hole: mask)
-                return [try write(Media.composite(result: filled, over: canvas, mask: mask), name: "image")]
+                return [try write(FillRoute.composite(result: filled, over: canvas, mask: mask), name: "image")]
             }
-            let painted = Media.composite(result: paintedRegion, over: canvas, mask: mask)
+            let painted = FillRoute.composite(result: paintedRegion, over: canvas, mask: mask)
             // The edit model continued its own re-rendering of the picture, so its border can meet the original out of
             // step (a trunk a little to one side). LaMa bridges a thin band on the new side of the seam from both
             // sides' context; the original's pixels stay as they are.
-            let band = Media.seamBand(of: mask, width: max(8, max(canvas.width, canvas.height) / 48))
+            let band = FillRoute.seamBand(of: mask, width: max(8, max(canvas.width, canvas.height) / 48))
             let lama = try await route(.imageInpaint, helper: true)
             modelParams["seam"] = .string(lama.id)
             let bridged = try image(try await invoke(lama, params: [:], inputs: ["image": [Media.modelImage(painted)],
                                                                                  "mask": [Media.modelImage(band)]]))
-            result = Media.composite(result: bridged, over: painted, mask: band)
+            result = FillRoute.composite(result: bridged, over: painted, mask: band)
         } else {
             if !prompt.isEmpty {
                 warn("prompt_ignored", "\(context.model.title) extends from the picture itself; the prompt isn't used.", param: "prompt")
@@ -483,12 +484,12 @@ struct RunPlan {
             result = try image(try await invoke(route, params: [:], mode: inpaintMode(), inputs: ["image": [Media.modelImage(canvas)],
                                                                                                 "mask": [Media.modelImage(mask)]]))
         }
-        return [try write(Media.composite(result: result, over: canvas, mask: mask), name: "image")]
+        return [try write(FillRoute.composite(result: result, over: canvas, mask: mask), name: "image")]
     }
 
     /// An edit model paints `region` (shown to it in magenta) as `instruction` says. The result is at the canvas's
     /// size; the caller composites it with the mask, so only the region changes. Edit models sometimes keep the marker
-    /// (as is, or as a shaded purple surface) or leave the region dark (`Media.paintingProblem`), so such a result is
+    /// (as is, or as a shaded purple surface) or leave the region dark (`FillRoute.paintingProblem`), so such a result is
     /// retried once with the next seed, and nil after that: the caller falls back.
     mutating func paint(_ canvas: Pixels, region: Mask, instruction: String, prompt: String, parts: [Mask]? = nil,
                         checkDark: Bool = false) async throws -> Pixels? {
@@ -497,7 +498,7 @@ struct RunPlan {
         let fitted = route.envelope.fit(width: canvas.width, height: canvas.height)
             ?? route.envelope.clamp(width: canvas.width, height: canvas.height)
         let base = seed(count: 2)
-        let marked = Media.mark(canvas, region: region)
+        let marked = FillRoute.mark(canvas, region: region)
         // A prompt that asks for the marker's colour can't be checked for it.
         let checkable = !["magenta", "pink", "fuchsia", "purple"].contains { prompt.lowercased().contains($0) }
         for attempt in 0..<2 {
@@ -505,11 +506,11 @@ struct RunPlan {
                                                     metaData: writtenPromptKeys(route), seed: base + UInt64(attempt),
                                                     width: fitted.width, height: fitted.height))
                 .resized(canvas.width, canvas.height)
-            let problem = checkable ? Media.paintingProblem(result, canvas: canvas, parts: parts ?? [region], checkDark: checkDark) : nil
+            let problem = checkable ? FillRoute.paintingProblem(result, canvas: canvas, parts: parts ?? [region], checkDark: checkDark) : nil
             guard let problem else {
                 seedUsed = base + UInt64(attempt)
                 if attempt > 0 { modelParams["retries"] = .number(Double(attempt)) }
-                return Media.harmonize(result, toward: canvas, region: region)
+                return FillRoute.harmonize(result, toward: canvas, region: region)
             }
             modelParams["rejected"] = .string(problem)
         }
@@ -625,7 +626,7 @@ struct RunPlan {
             modelParams["detector"] = .string(detector.id)
             record(painter)
             let result = try image(try await invoke(painter, params: [:], inputs: ["image": [Media.modelImage(input)], "mask": [Media.modelImage(mask)]]))
-            return [try write(keepAlpha(Media.composite(result: result, over: input, mask: mask), input: input), name: "image")]
+            return [try write(keepAlpha(FillRoute.composite(result: result, over: input, mask: mask), input: input), name: "image")]
         }
         let route = try await route(.imageRestore)
         record(route)

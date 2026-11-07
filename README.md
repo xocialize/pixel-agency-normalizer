@@ -66,7 +66,16 @@ swift package show-dependencies
 ```
 
 The tests serve the normalizer over a fake host with MESEngineKit and run MES's conformance suite against it, BASE and
-IMAGE. The only dependency is media-engine-spec (`MESCore`, `MESEngineCore`). macOS 26, Swift 6.2.
+IMAGE. The dependencies are media-engine-spec (`MESCore`, `MESEngineCore`) and, since 0.3.0, EraseKit's `EraseFill`
+product. macOS 26, Swift 6.2.
+
+**The fill route's pixel steps come from EraseFill** (0.3.0, AB-A-0180). That covers fill and extend: the marker, the
+paint guard, harmonize, the composite through the mask, the padded canvas and the seam band. EraseFill's `FillRoute` is
+the one implementation the Generative Fill bake-off measured, and ForgeCore (Pixel Agency Editor) calls it too. The
+normalizer's `Pixels`, `Mask` and `Box` are its `FillPixels`, `FillMask` and `FillBox`. The move was token-identical:
+the normalizer's copy matched ForgeCore 0.46.0's function for function. EraseFill depends on nothing (CoreGraphics only).
+Resolving the package also fetches media-bridge for EraseKit's other product, but nothing links it, and MLX stays out of
+the graph.
 
 ## Licence
 
