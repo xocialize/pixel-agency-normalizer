@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import ImageIO
 @testable import MESConformance
 import MESCore
 import MESEngineCore
@@ -244,6 +245,85 @@ struct NormalizerTests {
         struct Odd: Error {}
         #expect((ImageNormalizer.mesError(Odd()) as? MESError)?.code == MESErrorCode.engineError.rawValue)
         #expect((ImageNormalizer.mesError(NormalizerError.input("bad")) as? MESError)?.code == MESErrorCode.inputInvalid.rawValue)
+    }
+
+    @Test("PNG outputs: an opaque picture is RGB (colour type 2) with the same pixels, at 8 and 16 bits; one transparent pixel keeps RGBA; JPEG is unchanged")
+    func opaquePNGs() async throws {
+        /// The PNG's bit depth and colour type, from its IHDR (signature 8, length 4, "IHDR" 4, width 4, height 4).
+        func ihdr(_ png: Data) -> (bitDepth: Int, colourType: Int) {
+            #expect(png.prefix(8) == Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) && png[12..<16] == Data("IHDR".utf8))
+            return (Int(png[24]), Int(png[25]))
+        }
+        func decoded(_ png: Data) throws -> (image: CGImage, hasAlpha: Bool?) {
+            let source = try #require(CGImageSourceCreateWithData(png as CFData, nil))
+            let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+            return (try #require(CGImageSourceCreateImageAtIndex(source, 0, nil)), props?[kCGImagePropertyHasAlpha] as? Bool)
+        }
+
+        // 8 bits: every colour value somewhere, all opaque.
+        var opaque = Pixels(width: 37, height: 23)
+        for i in opaque.rgba.indices { opaque.rgba[i] = i % 4 == 3 ? 255 : UInt8((i * 37 + i / 97) % 256) }
+        let rgb = Media.encode(opaque, mediaType: "image/png")
+        #expect(ihdr(rgb) == (8, 2))
+        let (rgbImage, rgbHasAlpha) = try decoded(rgb)
+        #expect(rgbHasAlpha != true && [.none, .noneSkipLast].contains(rgbImage.alphaInfo))   // ImageIO leaves HasAlpha out
+        #expect(Pixels(rgbImage) == opaque)
+        #expect(rgb.count < Media.encode(opaque.cgImage, mediaType: "image/png").count)
+
+        // One transparent pixel: still RGBA, its alpha kept, every other pixel exact.
+        var holed = opaque
+        holed.rgba.replaceSubrange(4 * 40..<4 * 41, with: [0, 0, 0, 0])
+        let rgba = Media.encode(holed, mediaType: "image/png")
+        #expect(ihdr(rgba) == (8, 6))
+        let (rgbaImage, rgbaHasAlpha) = try decoded(rgba)
+        #expect(rgbaHasAlpha == true)
+        #expect(Pixels(rgbaImage) == holed)
+
+        // A half-transparent pixel keeps its alpha too (its colour is re-premultiplied, so only the alpha is compared).
+        var soft = opaque
+        soft.rgba[4 * 7 + 3] = 128
+        for c in 0..<3 { soft.rgba[4 * 7 + c] = min(soft.rgba[4 * 7 + c], 128) }
+        let softPNG = Media.encode(soft, mediaType: "image/png")
+        #expect(ihdr(softPNG) == (8, 6))
+        #expect(Pixels(try decoded(softPNG).image).rgba[4 * 7 + 3] == 128)
+
+        // 16 bits: an opaque picture is 16-bit RGB with the same values; a transparent one 16-bit RGBA.
+        var deep = DeepPixels(width: 19, height: 11)
+        for i in deep.rgba.indices { deep.rgba[i] = i % 4 == 3 ? .max : UInt16((i * 4099 + 17) % 65536) }
+        #expect(deep.carriesMoreThanEightBits)
+        let deepRGB = Media.encode(deep, mediaType: "image/png")
+        #expect(ihdr(deepRGB) == (16, 2))
+        #expect(DeepPixels(try decoded(deepRGB).image).rgba == deep.rgba)
+        var deepHoled = deep
+        deepHoled.rgba.replaceSubrange(0..<4, with: [0, 0, 0, 0])
+        let deepRGBA = Media.encode(deepHoled, mediaType: "image/png")
+        #expect(ihdr(deepRGBA) == (16, 6))
+        #expect(DeepPixels(try decoded(deepRGBA).image).rgba == deepHoled.rgba)
+
+        // The outputs the profile defines as RGBA keep alpha even when opaque: decompose's layers, matte's extract.
+        #expect(ihdr(Media.encode(opaque, mediaType: "image/png", alwaysRGBA: true)) == (8, 6))
+        #expect(Pixels(try decoded(Media.encode(opaque, mediaType: "image/png", alwaysRGBA: true)).image) == opaque)
+
+        // JPEG and TIFF are written exactly as before.
+        #expect(Media.encode(opaque, mediaType: "image/jpeg") == Media.encode(opaque.cgImage, mediaType: "image/jpeg"))
+        #expect(Media.encode(deep, mediaType: "image/tiff") == Media.encode(deep.cgImage, mediaType: "image/tiff"))
+
+        // Through the engine: an opaque input's restore comes back as an RGB PNG; a half-clear one's as RGBA.
+        try await withEngine { probe in
+            let plain = try await probe.succeed(JobRequest(operation: "image.restore", inputs: ["image": image()]))
+            #expect(ihdr(try await probe.output(plain, 0).1) == (8, 2))
+            let clear = try await probe.succeed(JobRequest(operation: "image.restore", inputs: ["image": image(halfClearPNG())]))
+            let png = try await probe.output(clear, 0).1
+            #expect(ihdr(png) == (8, 6))
+            #expect(try DecodedImage(png).rgba[(20 * 64 + 5) * 4 + 3] == 0)
+            // decompose of an opaque input: the layers stay RGBA (Image §3.2), the composite is RGB.
+            let layered = try await probe.succeed(JobRequest(operation: "image.decompose", inputs: ["image": image()],
+                                                             params: ["layer_count": 2, "outputs": ["layers", "composite"]]))
+            #expect(Set(layered.result?.outputs.map(\.name) ?? []) == ["layers", "composite"])
+            for output in layered.result?.outputs ?? [] {
+                #expect(ihdr(try await probe.output(layered, output.index).1) == (8, output.name == "layers" ? 6 : 2), "\(output.name)")
+            }
+        }
     }
 
     @Test("The pieces: envelopes fit and clamp, tiles cover each axis, the namer's reply is a noun phrase, adapters' prompts")

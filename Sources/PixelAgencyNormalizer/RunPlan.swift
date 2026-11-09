@@ -152,17 +152,18 @@ struct RunPlan {
         }
     }
 
-    func write(_ pixels: Pixels, name: String, kind: MESCore.Kind = .image, index: Int = 0) throws -> ProducedOutput {
+    /// An opaque picture's PNG is RGB unless `alwaysRGBA` (`Media.encode`).
+    func write(_ pixels: Pixels, name: String, kind: MESCore.Kind = .image, index: Int = 0, alwaysRGBA: Bool = false) throws -> ProducedOutput {
         let type = kind == .mask ? "image/png" : outputType
         let url = context.outputDirectory.appendingPathComponent("\(name)-\(index).\(Self.fileExtension(type))")
-        try Media.encode(pixels.cgImage, mediaType: type).write(to: url)
+        try Media.encode(pixels, mediaType: type, alwaysRGBA: alwaysRGBA).write(to: url)
         return .file(url, name: name, kind: kind, mediaType: type, width: pixels.width, height: pixels.height)
     }
 
     /// `write` at 16 bits: a 16-bit PNG or TIFF.
     func write(_ pixels: DeepPixels, name: String, index: Int = 0) throws -> ProducedOutput {
         let url = context.outputDirectory.appendingPathComponent("\(name)-\(index).\(Self.fileExtension(outputType))")
-        try Media.encode(pixels.cgImage, mediaType: outputType).write(to: url)
+        try Media.encode(pixels, mediaType: outputType).write(to: url)
         return .file(url, name: name, kind: .image, mediaType: outputType, width: pixels.width, height: pixels.height)
     }
 
@@ -678,7 +679,7 @@ struct RunPlan {
         if wanted.contains("extract") {
             let url = context.outputDirectory.appendingPathComponent("extract-0.png")
             let cut = Media.extract(input, alpha: mask)
-            try Media.encode(cut.cgImage, mediaType: "image/png").write(to: url)          // alpha needs PNG
+            try Media.encode(cut, mediaType: "image/png", alwaysRGBA: true).write(to: url)    // an RGBA cut-out (§2), even opaque
             outputs.append(.file(url, name: "extract", kind: .image, mediaType: "image/png", width: cut.width, height: cut.height))
         }
         return outputs

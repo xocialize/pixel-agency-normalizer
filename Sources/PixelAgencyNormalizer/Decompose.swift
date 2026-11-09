@@ -170,7 +170,7 @@ extension RunPlan {
         }
         effective[ImageProfile.Param.layerCount] = .number(Double(layers.count))
         seedUsed = base
-        var outputs = try layers.enumerated().map { try write($1, name: "layers", index: $0) }
+        var outputs = try layers.enumerated().map { try write($1, name: "layers", index: $0, alwaysRGBA: true) }   // RGBA (§3.2)
         if let composite { outputs.append(try write(composite, name: "composite")) }
         return outputs
     }

@@ -77,6 +77,15 @@ the normalizer's copy matched ForgeCore 0.46.0's function for function. EraseFil
 Resolving the package also fetches media-bridge for EraseKit's other product, but nothing links it, and MLX stays out of
 the graph.
 
+**Opaque pictures are written as RGB PNGs** (0.3.1, AB-A-0260). Every image output used to be an RGBA PNG, opaque or
+not. A PNG output with no transparent pixel now has no alpha channel (colour type 2, 8- or 16-bit as before); one with
+any transparency stays RGBA (colour type 6), as Image §1.5's reapplied alpha needs. The outputs the profile defines as
+RGBA stay RGBA even when opaque: `image.decompose`'s layers (§3.2, IMAGE-014) and `image.matte`'s `extract` (§2,
+IMAGE-004). A decompose `composite` follows the general rule. Pixels are unchanged, but the bytes (and hashes) of
+opaque outputs change. That reaches every engine linking the normalizer, so pixel-agency-image-engine and Pixel Agency
+Desktop's built-in engine are affected too. JPEG and TIFF outputs, masks (8-bit grey already) and the PNGs handed to
+model packages are written as before.
+
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE).

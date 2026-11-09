@@ -13,6 +13,11 @@ typealias Pixels = FillPixels
 extension FillPixels {
     /// Whether any pixel is less than fully opaque.
     var hasTransparency: Bool { stride(from: 3, to: rgba.count, by: 4).contains { rgba[$0] < 255 } }
+
+    /// The same bytes as an image with no alpha channel (RGBX, `noneSkipLast`): what an opaque picture's PNG is written
+    /// from, so ImageIO writes colour type 2 (RGB) rather than 6 (RGBA). Only for pixels without transparency, where
+    /// premultiplied and straight colour are the same values (un-premultiplying at alpha 255 is the identity).
+    var opaqueCGImage: CGImage { Media.image(Data(rgba), width: width, height: height, bitsPerComponent: 8, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) }
 }
 
 /// Pixels at 16 bits (Gigapixel gap G-6, AB-A-0158): sRGB, 16 bits per channel, premultiplied RGBA, top row first —
@@ -52,6 +57,12 @@ struct DeepPixels: Sendable {
 
     /// Whether any pixel is less than fully opaque.
     var hasTransparency: Bool { stride(from: 3, to: rgba.count, by: 4).contains { rgba[$0] < UInt16.max } }
+
+    /// `Pixels.opaqueCGImage` at 16 bits: the same bytes with no alpha channel, so an opaque picture's PNG is 16-bit RGB.
+    var opaqueCGImage: CGImage {
+        Media.image(rgba.withUnsafeBytes { Data($0) }, width: width, height: height, bitsPerComponent: 16,
+                    bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue | CGBitmapInfo.byteOrder16Little.rawValue)
+    }
 
     func resized(_ w: Int, _ h: Int) -> DeepPixels { w == width && h == height ? self : DeepPixels(cgImage, width: w, height: h) }
 
@@ -177,10 +188,38 @@ enum Media {
         ModelImage(format: .png, data: encode(mask.cgImage, mediaType: "image/png"), width: mask.width, height: mask.height)
     }
 
+    /// The file type `encode` writes for a media type: JPEG, TIFF, or PNG for anything else.
+    static func fileType(_ mediaType: String) -> UTType {
+        mediaType == "image/jpeg" ? .jpeg : mediaType == "image/tiff" ? .tiff : .png
+    }
+
+    /// Encodes pixels: a PNG of a picture with no transparent pixel is RGB, with no alpha channel (colour type 2, AB-A-0260);
+    /// one with any transparency keeps its alpha (RGBA, colour type 6: Image §1.5's reapplied alpha). `alwaysRGBA` keeps
+    /// the alpha channel of an opaque picture too, for the outputs the profile defines as RGBA whatever their pixels:
+    /// `image.decompose`'s layers (Image §3.2, IMAGE-014) and `image.matte`'s `extract` (§2, IMAGE-004). The pixel values
+    /// are the same either way. JPEG and TIFF are written as before.
+    static func encode(_ pixels: Pixels, mediaType: String, alwaysRGBA: Bool = false) -> Data {
+        let rgb = fileType(mediaType) == .png && !alwaysRGBA && !pixels.hasTransparency
+        return encode(rgb ? pixels.opaqueCGImage : pixels.cgImage, mediaType: mediaType)
+    }
+
+    /// `encode` at 16 bits: an opaque picture's PNG is 16-bit RGB, a transparent one's 16-bit RGBA.
+    static func encode(_ pixels: DeepPixels, mediaType: String) -> Data {
+        encode(fileType(mediaType) == .png && !pixels.hasTransparency ? pixels.opaqueCGImage : pixels.cgImage, mediaType: mediaType)
+    }
+
+    /// An sRGB image over `data`, four components a pixel, rows packed.
+    static func image(_ data: Data, width: Int, height: Int, bitsPerComponent: Int, bitmapInfo: UInt32) -> CGImage {
+        CGImage(width: width, height: height, bitsPerComponent: bitsPerComponent, bitsPerPixel: bitsPerComponent * 4,
+                bytesPerRow: width * bitsPerComponent / 2, space: Pixels.sRGB, bitmapInfo: CGBitmapInfo(rawValue: bitmapInfo),
+                provider: CGDataProvider(data: data as CFData)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+    }
+
     /// Encodes as PNG, JPEG or TIFF, tagged sRGB (Image §1.3), upright with no orientation flag (§1.4). PNG and TIFF keep
-    /// a 16-bit image's 16 bits; TIFF is ZIP-compressed (lossless), as Desktop's Master deliverable is.
+    /// a 16-bit image's 16 bits; TIFF is ZIP-compressed (lossless), as Desktop's Master deliverable is. Pixels go through
+    /// `encode(_: Pixels, mediaType:)`, which drops the alpha channel of an opaque PNG.
     static func encode(_ image: CGImage, mediaType: String) -> Data {
-        let type: UTType = mediaType == "image/jpeg" ? .jpeg : mediaType == "image/tiff" ? .tiff : .png
+        let type = fileType(mediaType)
         let out = NSMutableData()
         let dest = CGImageDestinationCreateWithData(out, type.identifier as CFString, 1, nil)!
         var props: [CFString: Any] = [:]
