@@ -672,7 +672,9 @@ struct RunPlan {
         guard case .matte(let matte, _) = try await invoke(route, params: ["kind": "softAlpha"], inputs: ["image": [Media.modelImage(input)]]) else {
             throw NormalizerError.engine("The model returned no matte.")
         }
-        let mask = try Media.mask(matte, width: input.width, height: input.height)
+        var mask = try Media.mask(matte, width: input.width, height: input.height)
+        // Image §3.3 (RFC 0011): with a subject, the matte only where the subject is.
+        if let subject = context.subject { mask = try await keep(mask, to: subject, input: input) }
         let wanted = Set(context.param("outputs")?.arrayValue?.compactMap(\.stringValue) ?? ["mask", "extract"])
         var outputs: [ProducedOutput] = []
         if wanted.contains("mask") { outputs.append(try write(mask, name: "mask")) }
@@ -683,6 +685,49 @@ struct RunPlan {
             outputs.append(.file(url, name: "extract", kind: .image, mediaType: "image/png", width: cut.width, height: cut.height))
         }
         return outputs
+    }
+
+    /// A matte kept to one subject (Image §3.3, RFC 0011): the segmenter runs on the subject's box or points, and the
+    /// matte's level stays where the segmenter's mask is (their product, so the matte's soft edges survive inside the
+    /// subject and everything outside it is black). The segmenter is a helper: its licence is held to the request's
+    /// policy, it is named in `provenance.helpers` with the role `subject`, and `effective.subject` says what ran. A
+    /// subject that selects nothing the matte covers leaves an empty mask, with `nothing_found`.
+    mutating func keep(_ matte: Mask, to subject: ImageSubject, input: Pixels) async throws -> Mask {
+        guard let card = await normalizer.subjectSegmenter() else {
+            throw MESError(.unsupportedParameter, "No segmenter is on this engine to pick out a subject.", param: ImageProfile.Param.subject)
+        }
+        let license = ImageNormalizer.license(card)
+        guard context.policy.allows(license) else {
+            throw MESError(.policyUnmet, "A subject is picked out by \(card.displayName) (\(license.spdx)), which doesn't satisfy the "
+                           + "request's licence policy.", reason: "\(card.id): \(license.spdx)", param: ImageProfile.Param.subject)
+        }
+        let segmenter = try await route(.promptSegment, named: card.id)
+        var params: Params = [:]
+        switch subject {
+        case .box(let box):
+            // The engine contract's box prompt: [x0, y0, x1, y1] in source pixels.
+            let (x0, y0, x1, y1) = box.pixels(width: input.width, height: input.height)
+            params["box"] = .array([x0, y0, x1, y1].map { .number(Double($0)) })
+        case .points(let points):
+            params["points"] = .array(points.map { [.number($0.x * Double(input.width)), .number($0.y * Double(input.height))] })
+            params["pointLabels"] = .array(points.map { .number($0.include ? 1 : 0) })
+        }
+        guard case .matte(let picked, let score) = try await invoke(segmenter, params: params, inputs: ["image": [Media.modelImage(input)]]) else {
+            throw NormalizerError.engine("The segmenter returned no mask.")
+        }
+        let selection = try Media.mask(picked, width: input.width, height: input.height)
+        var kept = matte
+        for i in kept.values.indices { kept.values[i] = UInt8((Int(matte.values[i]) * Int(selection.values[i]) + 127) / 255) }
+        effective[ImageProfile.Param.subject] = subject.json
+        modelParams["segmenter"] = .string(segmenter.id)
+        if let score { modelParams["segmenter_score"] = .number(Double(score)) }
+        helpers.append(HelperRef(id: card.id, title: card.displayName, revision: Self.pinned(segmenter.revision), license: license,
+                                 role: ImageProfile.HelperRole.subject))
+        if !kept.values.contains(where: { $0 > 0 }) {
+            warn(ImageProfile.WarningCode.nothingFound, "The subject selects nothing \(context.model.title) cut out; the mask is empty.",
+                 param: ImageProfile.Param.subject)
+        }
+        return kept
     }
 
     mutating func segment() async throws -> [ProducedOutput] {

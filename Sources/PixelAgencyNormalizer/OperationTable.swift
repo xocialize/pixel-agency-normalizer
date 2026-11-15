@@ -175,8 +175,10 @@ enum OperationTable {
         OperationSpec("image.colorize", .imageColorize, defaults: ["ddcolor-colorize"], otherTiers: all,
                       params: ["quality", "output"], narrowed: ["output": output],
                       inputs: ["image": true]),
+        // A subject (Image §3.3, RFC 0011): offered while a segmenter is on hand to pick it out (`ImageNormalizer.
+        // subjectSegmenter`); the matte is then kept where the segmenter's mask is.
         OperationSpec("image.matte", .matting, defaults: ["birefnet-matte"], otherTiers: all,
-                      params: ["outputs"], inputs: ["image": true]),
+                      params: ["outputs", "subject"], inputs: ["image": true], helpers: [.promptSegment]),
         // Measured: first-click IoU SAM 2.1 0.755 vs EdgeTAM 0.537 (DEV/click-select-bench), at 0.1–0.25 s per image.
         OperationSpec("image.segment", .promptSegment,
                       tiers: ["edgetam-segment": [.draft], "sam21-segment": [.standard, .best]],

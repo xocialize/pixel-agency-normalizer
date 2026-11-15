@@ -296,6 +296,20 @@ public struct ImageNormalizer: MediaEngine {
             schema["x-mes-ui"] = .object(Self.hints(name, order: order))
             properties[name] = .object(schema)
         }
+        // A matte's subject (Image §3.3, RFC 0011): a parameter, and a `supports.subject` on every offer, only while a
+        // segmenter is here to pick the subject out. Without one the operation is as it was.
+        if spec.operation == ImageProfile.matte {
+            if let segmenter = Self.subjectSegmenter(models, offering: offering) {
+                let note = "With a subject, \(segmenter.displayName) picks it out and the matte is kept where its mask is."
+                for i in offers.indices {
+                    offers[i].supports = (offers[i].supports ?? [:])
+                        .merging([ImageProfile.SupportsKey.subject: .array(ImageProfile.subjectForms.map { .string($0) })]) { $1 }
+                    offers[i].notes = [offers[i].notes, note].compactMap { $0 }.joined(separator: " ")
+                }
+            } else {
+                properties[ImageProfile.Param.subject] = nil
+            }
+        }
         // Decompose (Image §3.2): `layer_count` up to the most an offer allows, `composite` only where an offer makes one.
         if spec.operation == "image.decompose" { Decompose.narrow(&properties, offers: candidates) }
         if rewrites, case .object(var schema)? = ImageProfile.vocabularySchema(ImageProfile.Param.promptEnhance, operation: spec.operation) {
@@ -363,6 +377,19 @@ public struct ImageNormalizer: MediaEngine {
             qualityTiers: OperationTable.all.filter(tiers.contains), models: offers,
             extensions: extensions.isEmpty ? nil : extensions,
             remote: .init(possible: false))
+    }
+
+    /// The segmenter that picks out a matte's subject (Image §3.3, RFC 0011): `image.segment`'s preferred model that is
+    /// here, offered and routable by default (SAM 2.1, then EdgeTAM), else any such segmenter. Nil when none is.
+    static func subjectSegmenter(_ models: [ModelCard], offering: (ModelCard) -> Bool) -> ModelCard? {
+        let segmenters = models.filter { $0.capabilities.contains(.promptSegment) && $0.isDefaultRoutable && offering($0) }
+        let preferred = OperationTable.specs.first { $0.operation == "image.segment" }?.defaults ?? []
+        return preferred.lazy.compactMap { id in segmenters.first { $0.id == id } }.first ?? segmenters.first
+    }
+
+    /// `subjectSegmenter` among the host's models now.
+    func subjectSegmenter() async -> ModelCard? {
+        Self.subjectSegmenter(await host.models(), offering: offered)
     }
 
     /// The creative upscale's models are here: its editor (Mage-Flow-Edit-Turbo, for image edits) and its Realistic
@@ -473,7 +500,7 @@ public struct ImageNormalizer: MediaEngine {
         "image.erase": "Removes what the mask covers.", "image.extend": "Extends the canvas and continues the picture into the new area; the original stays exactly as it is.",
         "image.upscale": "Exactly ×2 or ×4.", "image.restore": "Denoise, deblur, faces, or scratches, chosen by kind.",
         "image.relight": "Corrects under- and over-exposure.", "image.colorize": "Colours black-and-white photos.",
-        "image.matte": "The main subject as a mask, and cut out.", "image.segment": "The object at the given points, as a mask.",
+        "image.matte": "The main subject as a mask, and cut out; or, with a subject, the one thing you box or point at.", "image.segment": "The object at the given points, as a mask.",
         "image.describe": "A caption, alt text and tags.", "image.score": "No-reference quality, 0 to 1.",
         "image.enhance_prompt": "The prompt as the target model would run it with prompt enhancement on, to show and edit "
             + "before generating.",

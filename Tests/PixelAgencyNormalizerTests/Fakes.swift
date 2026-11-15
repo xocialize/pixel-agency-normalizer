@@ -58,7 +58,27 @@ final class FakeHost: ModelHost {
             return .image(Self.solid(w * scale - 2, h * scale - 2, red: 0.5, green: 0.5, blue: 0.5))   // off by a little
         case .imageRestore, .imageRelight, .imageColorize:
             return .image(Self.solid(w, h, red: 0.3, green: 0.3, blue: 0.3))
-        case .matting, .promptSegment, .defectDetect:
+        case .matting:
+            // What stands out from the picture's corner colour, at its own (half) resolution: on a plain background, the
+            // things in front of it, all of them.
+            guard let first, let matte = Self.standingOut(first) else { return .matte(Self.greyMatte(max(8, w / 2), max(8, h / 2)), score: 0.9) }
+            return .matte(matte, score: 0.9)
+        case .promptSegment:
+            // A box prompt selects the box; point prompts select what is nearer an include point than any exclude point.
+            if let box = work.params["box"]?.arrayValue?.compactMap(\.numberValue), box.count == 4 {
+                return .matte(Self.region(w, h) { x, y in x >= box[0] && x < box[2] && y >= box[1] && y < box[3] }, score: 0.9)
+            }
+            if let points = work.params["points"]?.arrayValue?.map({ $0.arrayValue?.compactMap(\.numberValue) ?? [] }), !points.isEmpty,
+               let labels = work.params["pointLabels"]?.arrayValue?.compactMap(\.intValue), labels.count == points.count, labels.contains(0) {
+                return .matte(Self.region(w, h) { x, y in
+                    let nearest = points.indices.min { a, b in
+                        hypot(points[a][0] - x, points[a][1] - y) < hypot(points[b][0] - x, points[b][1] - y)
+                    }!
+                    return labels[nearest] == 1
+                }, score: 0.8)
+            }
+            return .matte(Self.greyMatte(max(8, w / 2), max(8, h / 2)), score: 0.9)
+        case .defectDetect:
             return .matte(Self.greyMatte(max(8, w / 2), max(8, h / 2)), score: 0.9)
         case .imageAnalysis where work.params["prompt"]?.stringValue?.contains("red box") == true:
             return .text("A red mug.\nIt sits on the table.")
@@ -156,6 +176,41 @@ final class FakeHost: ModelHost {
             ctx.fill(CGRect(x: i * w / max(1, n - 1), y: 0, width: max(1, w / max(1, n - 1)), height: h))
         }
         return ModelImage(format: .png, data: png(ctx.makeImage()!), width: w, height: h)
+    }
+
+    /// A full-size binary matte: white where `inside` says so, in the picture's pixel coordinates (top-left origin).
+    static func region(_ w: Int, _ h: Int, _ inside: (Double, Double) -> Bool) -> ModelMatte {
+        var values = [UInt8](repeating: 0, count: w * h)
+        for y in 0..<h { for x in 0..<w where inside(Double(x) + 0.5, Double(y) + 0.5) { values[y * w + x] = 255 } }
+        return matte(values, w, h)
+    }
+
+    /// A matte, at half the picture's size, of the pixels that differ from its top-left pixel.
+    static func standingOut(_ image: ModelImage) -> ModelMatte? {
+        guard let source = CGImageSourceCreateWithData(image.data as CFData, nil),
+              let cg = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        let (w, h) = (max(8, cg.width / 2), max(8, cg.height / 2))
+        var rgba = [UInt8](repeating: 0, count: w * h * 4)
+        rgba.withUnsafeMutableBytes { buffer in
+            let ctx = CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+            ctx.interpolationQuality = .none
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: w, height: h))
+        }
+        let values = (0..<(w * h)).map { i -> UInt8 in
+            let d = (0..<3).reduce(0) { $0 + abs(Int(rgba[i * 4 + $1]) - Int(rgba[$1])) }
+            return d > 60 ? 255 : 0
+        }
+        return matte(values, w, h)
+    }
+
+    static func matte(_ values: [UInt8], _ w: Int, _ h: Int) -> ModelMatte {
+        var copy = values
+        let image = copy.withUnsafeMutableBytes { buffer -> CGImage in
+            CGContext(data: buffer.baseAddress, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w, space: CGColorSpaceCreateDeviceGray(),
+                      bitmapInfo: CGImageAlphaInfo.none.rawValue)!.makeImage()!
+        }
+        return ModelMatte(data: png(image), width: w, height: h)
     }
 
     static func greyMatte(_ w: Int, _ h: Int) -> ModelMatte {

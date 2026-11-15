@@ -14,7 +14,7 @@ import Testing
 func config() -> EngineConfiguration {
     let spool = FileManager.default.temporaryDirectory.appendingPathComponent("pa-normalizer-\(UUID().uuidString)")
     var c = EngineConfiguration(id: "eng_normalizer_test", name: "Pixel Agency Normalizer (test)",
-                                implementationName: "pixel-agency-normalizer", implementationVersion: "0.2.0", spoolDirectory: spool)
+                                implementationName: "pixel-agency-normalizer", implementationVersion: "0.4.0", spoolDirectory: spool)
     c.advertise = false
     c.sweepInterval = .milliseconds(200)
     return c
@@ -66,6 +66,76 @@ struct NormalizerTests {
             #expect(report.results.first { $0.id == "IMAGE-011" }?.status == .pass, "the prompt enhancer's preview runs")
             #expect(decomposeResults(report) == ["IMAGE-014": .pass, "IMAGE-015": .pass, "IMAGE-016": .pass],
                     "decompose runs on the decomposer, with its composite")
+            // A subject on matte (RFC 0011), by a box and by points, with the segmenter beside the matting model.
+            #expect(report.results.first { $0.id == "IMAGE-020" }?.status == .pass)
+            #expect(report.results.first { $0.id == "IMAGE-020" }?.detail == "ran: birefnet-matte box, birefnet-matte points.")
+            #expect(report.results.first { $0.id == "IMAGE-021" }?.status == .pass)
+        }
+    }
+
+    @Test("matte with a subject: the segmenter gets the box in pixels or the points, the matte is kept where its mask is, and it is named as a helper")
+    func matteSubject() async throws {
+        let host = FakeHost()
+        try await withEngine(host: host) { probe in
+            let d = try #require(probe.descriptor("image.matte"))
+            #expect(d.params["properties"]?["subject"]?["oneOf"]?.arrayValue?.count == 2)
+            #expect(d.models.allSatisfy { $0.supports("subject") == ["box", "points"] })
+            #expect(d.models.first?.notes?.contains("picks it out and the matte is kept where its mask is") == true)
+            func levels(_ job: Job, _ index: Int = 0, channel: Int = 0) async throws -> (left: Double, right: Double) {
+                let image = try DecodedImage(try await probe.output(job, index).1)
+                return (image.mean(channel: channel, in: Fixtures.leftBallCore), image.mean(channel: channel, in: Fixtures.rightBallCore))
+            }
+
+            // Without a subject: both balls, one model run, nothing new in the result.
+            let whole = try await probe.succeed(JobRequest(operation: "image.matte", inputs: ["image": image(Fixtures.twoBalls())]))
+            let both = try await levels(whole)
+            #expect(both.left == 255 && both.right == 255)
+            #expect(whole.result?.provenance.helpers == nil && whole.result?.effective["subject"] == nil)
+            #expect(host.calls.withLock { $0.map(\.route.capability) } == [.matting])
+
+            // A box around the left ball: the matting model, then the segmenter with the box as [x0, y0, x1, y1] pixels.
+            let boxed = try await probe.succeed(JobRequest(operation: "image.matte", inputs: ["image": image(Fixtures.twoBalls())],
+                                                           params: ["subject": ["box": Fixtures.leftBallBox.json]]))
+            let mask = try await levels(boxed), extract = try await levels(boxed, 1, channel: 3)
+            #expect(mask.left == 255 && mask.right == 0 && extract.left == 255 && extract.right == 0)
+            let call = try #require(host.calls.withLock { $0.last })
+            #expect(call.route.id == "sam21-segment" && call.params["box"] == [16, 16, 112, 112] && call.params["points"] == nil)
+            #expect(host.calls.withLock { $0.suffix(2).map(\.route.capability) } == [.matting, .promptSegment])
+            #expect(ImageSubject(boxed.result?.effective["subject"]) == .box(Fixtures.leftBallBox))
+            #expect(boxed.result?.effective["model_params"]?["segmenter"] == "sam21-segment")
+            let helper = try #require(boxed.result?.provenance.helpers?.first)
+            #expect(helper.id == "sam21-segment" && helper.role == "subject" && helper.license.commercialUse == .yes)
+            #expect(boxed.result?.provenance.model.id == "birefnet-matte" && boxed.warnings.isEmpty)
+
+            // Points: on the right ball, off the left one. The segmenter gets them in pixels with 1 and 0.
+            let pointed = try await probe.succeed(JobRequest(operation: "image.matte", inputs: ["image": image(Fixtures.twoBalls())],
+                params: ["subject": ["points": [["x": 0.75, "y": 0.5, "label": "include"], ["x": 0.25, "y": 0.5, "label": "exclude"]]], "outputs": ["mask"]]))
+            let right = try await levels(pointed)
+            #expect(right.left == 0 && right.right == 255 && pointed.result?.outputs.map(\.name) == ["mask"])
+            let points = try #require(host.calls.withLock { $0.last })
+            #expect(points.params["points"] == [[192, 64], [64, 64]] && points.params["pointLabels"] == [1, 0] && points.params["box"] == nil)
+
+            // A box over empty background: an empty mask, a success, and the warning.
+            let empty = try await probe.succeed(JobRequest(operation: "image.matte", inputs: ["image": image(Fixtures.twoBalls())],
+                params: ["subject": ["box": ["x": 0.42, "y": 0, "width": 0.14, "height": 0.1]]]))
+            let nothing = try await levels(empty)
+            #expect(nothing.left == 0 && nothing.right == 0)
+            #expect(empty.warnings.map(\.code) == ["nothing_found"] && empty.warnings.first?.param == "subject")
+        }
+    }
+
+    @Test("matte without a segmenter on the host: no subject parameter, no supports.subject, and a subject is refused (422)")
+    func matteSubjectNeedsASegmenter() async throws {
+        let cards = FakeHost.catalog.filter { !$0.capabilities.contains(.promptSegment) }
+        try await withEngine(host: FakeHost(cards)) { probe in
+            let d = try #require(probe.descriptor("image.matte"))
+            #expect(d.params["properties"]?["subject"] == nil && d.params["properties"]?["outputs"] != nil)
+            #expect(d.models.allSatisfy { $0.supports("subject") == nil && $0.notes == nil })
+            let reply = try await probe.wire.json("POST", "jobs", JobRequest(operation: "image.matte", inputs: ["image": image()],
+                                                                             params: ["subject": ["box": Fixtures.leftBallBox.json]]))
+            #expect(reply.status == 422 && reply.errorCode == "unsupported_parameter" && reply.json?["error"]?["param"] == "subject")
+            let report = await ConformanceRunner.run(probe, only: ["IMAGE-004", "IMAGE-020", "IMAGE-021"])
+            #expect(report.results.map(\.status) == [.pass, .skip, .skip], "\(report.results.map { "\($0.id): \($0.detail ?? "")" })")
         }
     }
 

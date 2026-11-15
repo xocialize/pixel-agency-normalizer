@@ -17,10 +17,11 @@ let package = Package(
         .library(name: "PixelAgencyNormalizer", targets: ["PixelAgencyNormalizer"]),
     ],
     dependencies: [
-        // MES ≥ 0.6.0: image.decompose (Image §3.2, RFC 0004), on top of first-class adapters (Base §6.3), the
+        // MES ≥ 0.15.0: a subject on image.matte (Image §3.3, RFC 0011: ImageSubject, supports.subject, the `subject` helper
+        // role, nothing_found), on top of image.decompose (Image §3.2, RFC 0004), first-class adapters (Base §6.3), the
         // prompt_enhance vocabulary and RunOutput.helpers (Image §1.9), ic slots (Image §1.10), ModelEnablement. MESCore and
         // MESEngineCore only: no server, no UI.
-        .package(url: "https://github.com/xocialize/media-engine-spec.git", from: "0.6.0"),
+        .package(url: "https://github.com/xocialize/media-engine-spec.git", from: "0.15.0"),
         // EraseFill: the generative fill route's pixel steps (FillRoute), the one implementation the bake-off measured,
         // shared with ForgeCore (AB-A-0180). Its own product with no dependencies, CoreGraphics only: still no MLX.
         .package(url: "https://github.com/xocialize/EraseKit.git", from: "0.3.0"),

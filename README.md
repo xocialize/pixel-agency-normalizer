@@ -12,7 +12,7 @@ work order AB-T-0359):
 |---|---|
 | [pixel-agency-image-engine](https://github.com/xocialize/pixel-agency-image-engine) | In process, over mlx-image-runtime (`RuntimeModelHost`) |
 | [Pixel Agency Desktop](https://github.com/xocialize/pixel-agency-desktop)'s built-in engine | In process, over ForgeCore's processing tiers |
-| [Gaea](https://github.com/xocialize/gaea) | In plugin processes: each model is a plugin offer, and helpers are offers too |
+| [Gaea](https://github.com/xocialize-code/gaea) | In plugin processes: each model is a plugin offer, and helpers are offers too |
 
 ## What it does
 
@@ -85,6 +85,25 @@ IMAGE-004). A decompose `composite` follows the general rule. Pixels are unchang
 opaque outputs change. That reaches every engine linking the normalizer, so pixel-agency-image-engine and Pixel Agency
 Desktop's built-in engine are affected too. JPEG and TIFF outputs, masks (8-bit grey already) and the PNGs handed to
 model packages are written as before.
+
+**`image.matte` cuts out one subject** (0.4.0, AB-A-0292; Image §3.3, MES RFC 0011, media-engine-spec ≥ 0.15.0). A
+request's `subject` is a box around the thing or points on and off it, in shares of the upright picture. The matting
+model runs as before. Then a segmenter runs on the box (as `box: [x0, y0, x1, y1]` in source pixels, the engine
+contract's box prompt) or on the points (`points` and `pointLabels`, as `image.segment` sends them), and the matte is
+kept where the segmenter's mask is: their product, so soft edges survive inside the subject and everything outside it
+is black. `mask` and `extract` then cover the subject alone.
+- The segmenter is `image.segment`'s preferred model that the host has, offered and routable by default: SAM 2.1
+  (`sam21-segment`), then EdgeTAM. It is reported in `provenance.helpers` with the role `subject`, and its licence is
+  held to the request's policy (422 `policy_unmet` otherwise). `effective.subject` is the subject used, and
+  `effective.model_params` names the segmenter and gives its score.
+- The matte's offers list `supports.subject: ["box", "points"]`, and the descriptor has the `subject` parameter, only
+  while the host has such a segmenter. Without one the operation is exactly as it was, and a `subject` is refused with
+  422 `unsupported_parameter`.
+- A subject that selects nothing the matte covers gives an empty mask and the warning `nothing_found`.
+- Without `subject` nothing changes: one model run, the same bytes.
+
+Measured here on the fake host only (IMAGE-020 and IMAGE-021 pass, with a box and with points). Not run in this
+repository: real models. Gaea checks it with the Forge pack on mlx-3d's two hard pictures (AB-A-0292).
 
 ## Licence
 
