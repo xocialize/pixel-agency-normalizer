@@ -113,10 +113,13 @@ enum OperationTable {
         // 0.94, text spelled right) at 13.7 s; Z-Image (28 steps, 70 s) scored lower on both, so it isn't "best".
         // MOSS-Image (SFT, and Base) is best-tier by name only (AB-T-0307): long EN/ZH text and JSON layout prompts, but
         // 50 CFG steps is about 2 min per 1024² image, so no unnamed request lands on it.
+        // Draft: Klein 4B's one-step RDM DiT (klein-4b-rdm, gaea-plugin-flux2-klein 0.4.0) where it's registered, else Klein
+        // 4B. TierBench on Gaea at 1024² (AB-R-1056): 2.8 s against 6.5 s, IQA level (0.903 / 0.862 vs 0.903 / 0.866),
+        // hard-prompt recall 0.94 vs 0.89; it spells in-image text a little less reliably.
         OperationSpec("image.generate", .textToImage,
-                      tiers: ["klein-4b": [.draft], "z-image-turbo": [.standard, .best], "z-image": [.standard],
+                      tiers: ["klein-4b-rdm": [.draft], "klein-4b": [.draft], "z-image-turbo": [.standard, .best], "z-image": [.standard],
                               "qwen-image-flash": [.standard, .best], "moss-image-sft": [.best], "moss-image-base": [.best]],
-                      defaults: ["z-image-turbo", "klein-4b", "z-image"],
+                      defaults: ["z-image-turbo", "klein-4b-rdm", "klein-4b", "z-image"],
                       params: ["negative_prompt", "size", "aspect", "megapixels", "quality", "seed", "count", "output"],
                       narrowed: ["count": ["type": "integer", "minimum": 1, "maximum": 4, "default": 1], "output": output],
                       inputs: ["prompt": true]),

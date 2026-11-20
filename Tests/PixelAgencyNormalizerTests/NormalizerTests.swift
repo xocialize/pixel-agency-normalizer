@@ -273,6 +273,28 @@ struct NormalizerTests {
         }
     }
 
+    @Test("generate draft: Klein 4B's one-step RDM where it's registered, else Klein 4B (AB-R-1056)")
+    func generateDraft() async throws {
+        let draft = JobRequest(operation: "image.generate", inputs: ["prompt": .text("a lighthouse")],
+                               params: ["size": ["width": 256, "height": 256], "quality": "draft"])
+        let withRDM = FakeHost(FakeHost.catalog + [FakeHost.model("klein-4b-rdm", [.textToImage], guidance: 1, gb: 8)])
+        try await withEngine(host: withRDM) { probe in
+            _ = try await probe.succeed(draft)
+            #expect(withRDM.calls.withLock { $0.last?.route.id } == "klein-4b-rdm")
+        }
+        let without = FakeHost()
+        try await withEngine(host: without) { probe in
+            _ = try await probe.succeed(draft)
+            #expect(without.calls.withLock { $0.last?.route.id } == "klein-4b")
+        }
+        let standard = FakeHost(FakeHost.catalog + [FakeHost.model("klein-4b-rdm", [.textToImage], guidance: 1, gb: 8)])
+        try await withEngine(host: standard) { probe in
+            _ = try await probe.succeed(JobRequest(operation: "image.generate", inputs: ["prompt": .text("a lighthouse")],
+                                                   params: ["size": ["width": 256, "height": 256]]))
+            #expect(standard.calls.withLock { $0.last?.route.id } == "z-image-turbo")
+        }
+    }
+
     @Test("edit takes the first image's size; upscale is exactly ×scale; scratches detect, then inpaint")
     func plans() async throws {
         let host = FakeHost()
